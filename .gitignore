@@ -1,4 +1,5 @@
 data/*
+SRNTT/models/VGG19/*
 experiments/*
 results/*
 demo_training_srntt/*
@@ -6,6 +7,8 @@ demo_testing_srntt/*
 demo_testing_srntt-l2/*
 .vscode
 
+*.log
+*.logs
 *.html
 *.png
 *.jpg
