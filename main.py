@@ -55,6 +55,41 @@ parser.add_argument('--is_original_image', type=str2bool, default=True)
 args = parser.parse_args()
 
 if args.is_train:
+#### start from train.sh
+### --is_train                  True
+### --input_dir                 data/train/CUFED/input
+### --ref_dir                   data/train/CUFED/ref
+### --map_dir                   data/train/CUFED/map_321
+### --use_pretrained_model      False
+### --num_init_epochs           2
+### --num_epochs                2
+### --save_dir                  demo_training_srntt
+
+#### default parameters ####
+### --srntt_model_path          SRNTT/models/SRNTT
+### --vgg19_model_path          SRNTT/models/VGG19/imagenet-vgg-verydeep-19.mat
+### --num_res_blocks            16
+#==
+### --batch_size                9
+### --learning_rate             1e-4
+### --beta1                     0.9
+### --use_init_model_only       False
+### --w_per                     1e-4
+### --w_tex                     1e-4
+### --w_adv                     1e-6
+### --w_bp                      0.0
+### --w_rec                     1.0
+### --vgg_perceptual_loss_layer         relu5_1
+### --is_WGAN_GP                True
+### --is_L1_loss                True
+### --param_WGAN_GP             10
+### --input_size                40
+### --use_weight_map            False
+### --use_lower_layers_in_per_loss      False
+#==
+### --result_dir                result
+### --ref_scale                 1.0
+### --is_original_image         True
 
     # record parameters to file
     if args.save_dir is None:
@@ -95,6 +130,41 @@ if args.is_train:
         use_lower_layers_in_per_loss=args.use_lower_layers_in_per_loss
     )
 else:
+#### start from test.sh
+### --is_train                  False
+### --input_dir                 data/test/CUFED5/001_0.png
+### --ref_dir                   data/test/CUFED5/001_2.png
+### --result_dir                demo_testing_srntt
+
+#### default parameters ####
+### --srntt_model_path          SRNTT/models/SRNTT
+### --vgg19_model_path          SRNTT/models/VGG19/imagenet-vgg-verydeep-19.mat
+### --save_dir                  None
+### --num_res_blocks            16
+#==
+### --map_dir                   data/train/map_321
+### --batch_size                9
+### --num_init_epochs           5
+### --num_epochs                50
+### --learning_rate             1e-4
+### --beta1                     0.9
+### --use_pretrained_model      True
+### --use_init_model_only       False
+### --w_per                     1e-4
+### --w_tex                     1e-4
+### --w_adv                     1e-6
+### --w_bp                      0.0
+### --w_rec                     1.0
+### --vgg_perceptual_loss_layer         relu5_1
+### --is_WGAN_GP                True
+### --is_L1_loss                True
+### --param_WGAN_GP             10
+### --input_size                40
+### --use_weight_map            False
+### --use_lower_layers_in_per_loss      False
+#==
+### --ref_scale                 1.0
+### --is_original_image         True
     if args.save_dir is not None:
         # read recorded arguments
         fixed_arguments = ['srntt_model_path', 'vgg19_model_path', 'save_dir', 'num_res_blocks', 'use_weight_map']

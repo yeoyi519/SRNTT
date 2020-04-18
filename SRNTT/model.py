@@ -251,6 +251,7 @@ class SRNTT(object):
             return net, logits
 
     def tf_gram_matrix(self, x):
+        #### x (B, H, W, C) -> (B, HW, C), x.T @ x => (B, C, C)
         x = tf.reshape(x, tf.stack([-1, tf.reduce_prod(x.get_shape()[1:-1]), x.get_shape()[-1]]))
         return tf.matmul(x, x, transpose_a=True)
 
@@ -311,16 +312,19 @@ class SRNTT(object):
         # detect existing model if not use_pretrained_model
         if self.save_dir is None:
             self.save_dir = 'default_save_dir'
+        #### 不使用预训练模型但存在相关文件夹(demo_training_srntt/model)则删除
         if not use_pretrained_model and exists(join(self.save_dir, MODEL_FOLDER)):
             logging.warning('The existing model dir %s is removed!' % join(self.save_dir, MODEL_FOLDER))
             rmtree(join(self.save_dir, MODEL_FOLDER))
 
         # create save folders
+        #### 创建 demo_training_srntt/model 和 demo_training_srntt/sample
         for folder in [MODEL_FOLDER, SAMPLE_FOLDER]:
             if not exists(join(self.save_dir, folder)):
                 makedirs(join(self.save_dir, folder))
 
         # check input dir
+        #### 获得 input HQ, ref HQ, map(swapped features) 文件的路径
         files_input = sorted(glob(join(input_dir, '*.png')))
         files_map = sorted(glob(join(map_dir, '*.npz')))
         files_ref = sorted(glob(join(ref_dir, '*.png')))
@@ -333,21 +337,26 @@ class SRNTT(object):
         # ********************************************************************************
         logging.info('Building graph ...')
         # input LR images, range [-1, 1]
+        #### (B, H//4, W//4, C)
         self.input = tf.placeholder(dtype=tf.float32, shape=[batch_size, input_size, input_size, 3])
 
         # original images, range [-1, 1]
+        #### (B, H, W, C)
         self.ground_truth = tf.placeholder(dtype=tf.float32, shape=[batch_size, input_size * 4, input_size * 4, 3])
 
         # texture feature maps, range [0, ?]
+        #### relu3_1 (B, H//4, W//4, C), relu2_1 (B, H//2, W//2, C), relu1_1 (B, H, W, C)
         self.maps = tuple([tf.placeholder(dtype=tf.float32, shape=[batch_size, m.shape[0], m.shape[1], m.shape[2]])
                      for m in np.load(files_map[0], allow_pickle=True)['target_map']])
 
 
         # weight maps
+        #### (B, H//4, W//4)
         self.weights = tf.placeholder(dtype=tf.float32, shape=[batch_size, input_size, input_size])
 
 
         # reference images, ranges[-1, 1]
+        #### not used
         self.ref = tf.placeholder(dtype=tf.float32, shape=[batch_size, input_size, input_size, 3])
 
         # SRNTT network
@@ -357,6 +366,7 @@ class SRNTT(object):
             self.net_upscale, self.net_srntt = self.model(self.input, self.maps)
 
         # VGG19 network, input range [0, 255]
+        #### for perceptual loss, texture loss
         self.net_vgg_sr = VGG19((self.net_srntt.outputs + 1) * 127.5, model_path=self.vgg19_model_path)
         self.net_vgg_hr = VGG19((self.ground_truth + 1) * 127.5, model_path=self.vgg19_model_path)
         
@@ -470,6 +480,8 @@ class SRNTT(object):
         )
 
         # optimizer
+        #### 先使用 loss_init, 恒定学习率 训练 G
+        #### 再使用 loss, exponential_decay 训练 D 和 G
         optimizer_init = tf.train.AdamOptimizer(
             learning_rate=learning_rate, beta1=beta1).minimize(loss_init, var_list=var_g)
         optimizer = tf.train.AdamOptimizer(
@@ -480,6 +492,13 @@ class SRNTT(object):
         # ********************************************************************************
         # *** samples for monitoring the training process
         # ********************************************************************************
+        #### input HQ -> read(scipy.misc) -> input GT(samples_in)[0, 255]
+        ###           -> bicubic downsampling(scipy.misc) -> normalize -> input LR(samples_input)[-1, 1]
+        #### ref HQ -> read(scipy.misc) -> bicubic resize(scipy.misc) -> ref GT(samples_ref)[0, 255]
+        #### swapped maps -> np.load -> (samples_texture_map_tmp)[0, ?]
+        #### weights -> np.load -> np.pad -> (samples_weight_map)
+        ###       or -> np.zeros -> (samples_weight_map)
+
         np.random.seed(2019)
         idx = np.random.choice(np.arange(num_files), batch_size, replace=False)
         samples_in = [imread(files_input[i], mode='RGB') for i in idx]
@@ -587,6 +606,7 @@ class SRNTT(object):
             logging.info('**********'
                          ' Start training '
                          '**********')
+            #### 先使用 loss_init, 恒定学习率, 训练 num_init_epochs 次 G
             # pre-train with only reconstruction loss
             current_eta = None
             idx = np.arange(num_files)
@@ -660,6 +680,7 @@ class SRNTT(object):
                     name=join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']),
                     sess=sess)
 
+            #### 再使用 loss, exponential_decay 训练 num_epochs 次 D 和 G
             # train with all losses
             current_eta = None
             for epoch in xrange(num_epochs):
@@ -765,6 +786,7 @@ class SRNTT(object):
     ):
         logging.info('Testing mode')
 
+        #### 没有 ref
         if ref_dir is None:
             return self.test_without_ref(
                 input_dir=input_dir,

@@ -26,6 +26,7 @@ class Swap(object):
         sample patches from the style (reference) map
         :param feature_map: array, [H, W, C]
         :return: array (conv kernel), [H, W, C_in, C_out]
+            (p, p, nf, num_patches)
         """
         if feature_map is None:
             feature_map = self.style
@@ -40,29 +41,50 @@ class Swap(object):
         """
         feature swapping with multiple references on multiple feature layers
         :param content: array (h, w, c), feature map of content
+            input SR relu3_1, (H//4, W//4, nf3)=(40, 40, 256)
         :param style: list of array [(h, w, c)], feature map of each reference
+            ref GT relu3_1, (H//4, W//4, nf3)=(40, 40, 256)
         :param condition: list of array [(h, w, c)], augmented feature map of each reference for matching with content map
+            ref SR relu3_1, (H//4, W//4, nf3)=(40, 40, 256)
         :param patch_size: int, size of matching patch
         :param stride: int, stride of sliding the patch
         :param other_styles: list (different layers) of lists (different references) of array (feature map),
                 [[(h_, w_, c_)]], feature map of each reference from other layers
+            ref GT relu2_1, (H//2, W//2, nf2)=(80, 80, 128)
+            ref GT relu1_1, (H, W, nf1)=(160, 160, 64)
         :param is_weight, bool, whether compute weights
         :return: swapped feature maps - [3D array, ...], matching weights - 2D array, matching idx - 2D array
+            swapped feature maps:
+                relu3_1, (H//4, W//4, nf3)
+                relu2_1, (H//2, W//2, nf2)
+                relu1_1, (H, W, nf1)
+            matching weights: 与每个 input SR patch 最相关的 ref SR patch 的內积相似度, (ho, wo), num_patches_in_sr=ho*wo
+                实现方式是矩阵乘法, 操作对象是 normalized content patches 和 normalized condition patches
+            matching idx: 与每个 input SR patch 最相似的 ref SR patch 的块索引, (ho, wo), num_patches_in_sr=ho*wo
+                实现方式是卷积计算, 操作对象是 content 和 normalized condition patches
+            matching weights 与 matching idx 的计算本质上是一致的, 但操作对象不同
         """
+        #### 输入形状检查
+        #### num_channels = nf3 = 256
+        #### patch_size = p = 3
+        #### stride = s = 1
         assert isinstance(content, np.ndarray)
+        # input SR relu3_1 (H//4, W//4, nf3)=(40, 40, 256)
         self.content = np.squeeze(content)
         assert len(self.content.shape) == 3
 
         assert isinstance(style, list)
+        # [ref GT relu3_1], [(H//4, W//4, nf3)=(40, 40, 256)]
         self.style = [np.squeeze(s) for s in style]
         assert all([len(self.style[i].shape) == 3 for i in range(len(self.style))])
 
         assert isinstance(condition, list)
+        # [ref SR relu3_1], [(H//4, W//4, nf3)=(40, 40, 256)]
         self.condition = [np.squeeze(c) for c in condition]
         assert all([len(self.condition[i].shape) == 3 for i in range(len(self.condition))])
         assert len(self.condition) == len(self.style)
 
-        num_channels = self.content.shape[-1]
+        num_channels = self.content.shape[-1] # nf3 = 256
         assert all([self.style[i].shape[-1] == num_channels for i in range(len(self.style))])
         # assert all([self.condition[i].shape[-1] == num_channels for i in range(len(self.condition))])
         assert all([self.style[i].shape == self.condition[i].shape for i in range(len(self.style))])
@@ -70,12 +92,18 @@ class Swap(object):
         if other_styles is not None:
             assert isinstance(other_styles, list)
             assert all([isinstance(s, list) for s in other_styles])
+            # [[ref GT relu2_1], [ref GT relu1_1]], [[(H//2, W//2, nf2)=(80, 80, 128)], [(H, W, nf1)=(160, 160, 64)]]
             other_styles = [[np.squeeze(s) for s in styles] for styles in other_styles]
             assert all([all([len(s.shape) == 3 for s in styles]) for styles in other_styles])
 
-        self.patch_size = patch_size
-        self.stride = stride
+        self.patch_size = patch_size # p = 3
+        self.stride = stride # s = 1
 
+        #### 将 content, style, and condition (relu3_1) 按 patch_size, stride 分成 patches, num_patches 可能不同
+        ### content/input_sr -> patches_content (p, p, nf3, num_patches_in_sr)
+        ### style/ref_gt -> patches_style (p, p, nf3, num_patches_ref_gt)
+        ### condition/ref_sr -> patches (p, p, nf3, num_patches_ref_sr)
+        #### 归一化 content(patches_content), condition(patches)
         # split content, style, and condition into patches
         patches_content = self.style2patches(self.content)
         patches_style = np.concatenate(list(map(self.style2patches, self.style)), axis=-1)
@@ -88,6 +116,10 @@ class Swap(object):
         patches_content_normed = patches_content / norm
         del norm, patches, patches_content
 
+        #### 将 normalized condition patches/ref_sr 分成 batch 作为卷积核 (p, p, nf3, batch_size) = (k, k, ci, co),
+        #### 以 content/input_sr (H//4, W//4, nf3) 为输入做卷积运算, 得到相似图 (ho, wo, batch_size)
+        #### 对于相似图上每一个输出空间位置 (i, j), 求出最大值 max_val_tmp (ho, wo) 以及对应的patch索引 max_idx_tmp (ho, wo)
+        #### 和之前 batch 的计算结果相比, 汇总截止到当前的最大值 max_val (ho, wo) 及其索引 max_idx (ho, wo)
         # match content and condition patches (batch-wise matching because of memory limitation)
         # the size of a batch is 512MB
         batch_size = int(1024. ** 2 * 512 / (self.content.shape[0] * self.content.shape[1]))
@@ -113,6 +145,10 @@ class Swap(object):
                 max_val[indices] = max_val_tmp[indices]
                 max_idx[indices] = max_idx_tmp[indices]
 
+        #### patches_content_normed (p, p, nf3, num_patches_in_sr) reshape to (p*p*nf3, num_patches_in_sr), transpose to (num_patches_in_sr, p*p*nf3)
+        #### patches_style_normed (p, p, nf3, num_patches_ref_sr) reshape to (p*p*nf3, num_patches_ref_sr)
+        #### patches_content_normed @ patches_style_normed => corr2 (num_patches_in_sr, num_patches_ref_sr)
+        ###     -> max axis=-1, 找到与每个 input SR patch 最相关的 ref SR patch 的相似度 => (num_patches_in_sr, ) -> reshape to (ho, wo)
         # compute matching similarity (inner product)
         if is_weight:
             print('\tWeighting ...')
@@ -126,6 +162,9 @@ class Swap(object):
             weights = None
             del patches_content_normed, patches_style_normed
 
+        #### swap relu3_1 features, 每个空间位置按 max_idx 填上 ref GT relu3_1 features, 最后 average
+        #### 对于 relu2_1/relu1_1, 先相应的放大 patch_size 和 stride, 将 ref GT features 分成 patches
+        ###         每个按比例放大后对应的空间位置按 max_idx 填上 ref GT features, 最后 average
         # stitch matches style patches according to content spacial structure
         print('\tSwapping ...')
         maps = []
