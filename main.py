@@ -21,6 +21,7 @@ parser.add_argument('--is_train', type=str2bool, default=False)
 parser.add_argument('--srntt_model_path', type=str, default='SRNTT/models/SRNTT')
 parser.add_argument('--vgg19_model_path', type=str, default='SRNTT/models/VGG19/imagenet-vgg-verydeep-19.mat')
 parser.add_argument('--save_dir', type=str, default=None, help='dir of saving intermediate training results')
+parser.add_argument('--model_epoch', type=int, default=-1, help='')
 parser.add_argument('--num_res_blocks', type=int, default=16, help='number of residual blocks')
 
 # train parameters
@@ -32,6 +33,12 @@ parser.add_argument('--num_init_epochs', type=int, default=5)
 parser.add_argument('--num_epochs', type=int, default=50)
 parser.add_argument('--learning_rate', type=float, default=1e-4)
 parser.add_argument('--beta1', type=float, default=0.9)
+### train: 指定 save_dir 可继续训练, 但是只允许从当前最新的模型继续, 模型保存的序号继续增加
+## use_init_model_only: 基于只使用 loss_init 训练的模型, 继续进行二阶段训练(loss_init, loss)
+## use_pretrained_model: 基于使用 loss_init, loss 训练的模型, 继续进行二阶段训练(loss_init, loss)
+### test: 指定 save_dir 和 model_epoch, 加载指定迭代的模型进行测试, model_epoch=-1 表示使用最新模型
+## use_init_model_only: 只使用 loss_init 训练的模型进行测试
+## use_pretrained_model: 使用 loss_init, loss 训练的模型进行测试
 parser.add_argument('--use_pretrained_model', type=str2bool, default=True)
 parser.add_argument('--use_init_model_only', type=str2bool, default=False, help='effect if use_pretrained_model is true')
 parser.add_argument('--w_per', type=float, default=1e-4, help='weight of perceptual loss between output and ground truth')
@@ -194,6 +201,7 @@ else:
         ref_dir=args.ref_dir,
         use_pretrained_model=args.use_pretrained_model,
         use_init_model_only=args.use_init_model_only,
+        model_epoch=args.model_epoch,
         use_weight_map=args.use_weight_map,
         result_dir=args.result_dir,
         ref_scale=args.ref_scale,

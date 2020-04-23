@@ -33,12 +33,13 @@ logging.getLogger('').addHandler(console)
 MODEL_FOLDER = 'model'
 SAMPLE_FOLDER = 'sample'
 SRNTT_MODEL_NAMES = {
-    'init': 'srntt_init.npz',
-    'conditional_texture_transfer': 'srntt.npz',
-    'content_extractor': 'upscale.npz',
-    'discriminator': 'discrim.npz',
-    'weighted': 'srntt_weighted.npz'
+    'init': 'srntt_init',
+    'conditional_texture_transfer': 'srntt',
+    'content_extractor': 'upscale',
+    'discriminator': 'discrim',
+    'weighted': 'srntt_weighted'
 }
+MODEL_EXT = '.npz'
 
 
 class SRNTT(object):
@@ -531,8 +532,9 @@ class SRNTT(object):
             logging.info('Loading models ...')
             tf.global_variables_initializer().run()
 
+            ### 加载预训练的 content extractor, 存放在 srntt_model_path 中
             # load pre-trained upscaling.
-            model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['content_extractor'])
+            model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['content_extractor']+MODEL_EXT)
             if files.load_and_assign_npz(
                     sess=sess,
                     name=model_path,
@@ -543,10 +545,15 @@ class SRNTT(object):
                 np.round((self.net_upscale.outputs.eval({self.input: samples_input}) + 1) * 127.5).astype(np.uint8),
                 [frame_size, frame_size], join(self.save_dir, SAMPLE_FOLDER, 'Upscale.png'))
 
+            ### 根据当前实验的 save_dir 加载之前训练的模型以便继续训练
             # load the specific texture transfer model, specified by save_dir
             is_load_success = False
+            init_model_latest = 0
+            pre_model_latest = 0
             if use_init_model_only:
-                model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init'])
+                ## 加载只使用 loss_init 训练的模型, 继续训练它(loss_init, loss)
+                init_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']+'*'+MODEL_EXT)))
+                model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']+'_E{:03d}'.format(init_model_latest)+MODEL_EXT)
                 if files.load_and_assign_npz(
                         sess=sess,
                         name=model_path,
@@ -557,7 +564,9 @@ class SRNTT(object):
                 else:
                     logging.warning('FAILED load %s' % model_path)
             elif use_pretrained_model:
-                model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer'])
+                ## 加载之前训练的迁移模型, 继续训练它(loss_init, loss)
+                pre_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer']+'*'+MODEL_EXT)))
+                model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer']+'_E{:03d}'.format(pre_model_latest)+MODEL_EXT)
                 if files.load_and_assign_npz(
                         sess=sess,
                         name=model_path,
@@ -568,7 +577,7 @@ class SRNTT(object):
                 else:
                     logging.warning('FAILED load %s' % model_path)
 
-                model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['discriminator'])
+                model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['discriminator']+'_E{:03d}'.format(pre_model_latest)+MODEL_EXT)
                 if files.load_and_assign_npz(
                         sess=sess,
                         name=model_path,
@@ -577,11 +586,13 @@ class SRNTT(object):
                 else:
                     logging.warning('FAILED load %s' % model_path)
 
+            ### 当前实验的 save_dir 中没有训练过的模型, 则从 srntt_model_path 中加载预训练模型
             # load pre-trained conditional texture transfer
             if not is_load_success:
                 use_weight_map = False
                 if use_init_model_only:
-                    model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['init'])
+                    ## 加载只使用 loss_init 训练的模型, 继续训练它(loss_init, loss)
+                    model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['init']+MODEL_EXT)
                     if files.load_and_assign_npz(
                             sess=sess,
                             name=model_path,
@@ -592,7 +603,8 @@ class SRNTT(object):
                         logging.error('FAILED load %s' % model_path)
                         exit(0)
                 elif use_pretrained_model:
-                    model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['conditional_texture_transfer'])
+                    ## 加载之前训练的迁移模型, 继续训练它(loss_init, loss)
+                    model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['conditional_texture_transfer']+MODEL_EXT)
                     if files.load_and_assign_npz(
                             sess=sess,
                             name=model_path,
@@ -672,12 +684,12 @@ class SRNTT(object):
                         self.input: samples_input, self.maps: samples_texture_map,
                         self.weights: samples_weight_map}) + 1) * 127.5).astype(np.uint8),
                     [frame_size, frame_size],
-                    join(self.save_dir, SAMPLE_FOLDER, 'init_E%03d.png' % (epoch+1)))
+                    join(self.save_dir, SAMPLE_FOLDER, 'init_E%03d.png' % (epoch+1+init_model_latest)))
 
                 # save model for each epoch
                 files.save_npz(
                     save_list=self.net_srntt.all_params,
-                    name=join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']),
+                    name=join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']+'_E{:03d}'.format(epoch+1+init_model_latest)+MODEL_EXT),
                     sess=sess)
 
             #### 再使用 loss, exponential_decay 训练 num_epochs 次 D 和 G
@@ -759,16 +771,16 @@ class SRNTT(object):
                         self.input: samples_input, self.maps: samples_texture_map,
                         self.weights: samples_weight_map}) + 1) * 127.5).astype(np.uint8),
                     [frame_size, frame_size],
-                    join(self.save_dir, SAMPLE_FOLDER, 'E%03d.png' % (epoch + 1)))
+                    join(self.save_dir, SAMPLE_FOLDER, 'E%03d.png' % (epoch+1+pre_model_latest)))
 
                 # save models for each epoch
                 files.save_npz(
                     save_list=self.net_srntt.all_params,
-                    name=join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer']),
+                    name=join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer']+'_E{:03d}'.format(epoch+1+pre_model_latest)+MODEL_EXT),
                     sess=sess)
                 files.save_npz(
                     save_list=self.net_d.all_params,
-                    name=join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['discriminator']),
+                    name=join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['discriminator']+'_E{:03d}'.format(epoch+1+pre_model_latest)+MODEL_EXT),
                     sess=sess)
 
     def test(
@@ -777,6 +789,7 @@ class SRNTT(object):
             ref_dir=None,  # reference images
             use_pretrained_model=True,
             use_init_model_only=False,  # the init model is trained only with the reconstruction loss
+            model_epoch = -1,
             use_weight_map=False,
             result_dir=None,
             ref_scale=1.0,
@@ -792,6 +805,7 @@ class SRNTT(object):
                 input_dir=input_dir,
                 use_pretrained_model=use_pretrained_model,
                 use_init_model_only=use_init_model_only,
+                model_epoch=model_epoch,
                 use_weight_map=use_weight_map,
                 result_dir=result_dir,
                 ref_scale=ref_scale,
@@ -939,8 +953,9 @@ class SRNTT(object):
             logging.info('Loading models ...')
             self.sess.run(tf.global_variables_initializer())
 
+            ### 加载预训练的 content extractor, 存放在 srntt_model_path 中
             # load pre-trained content extractor, including upscaling.
-            model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['content_extractor'])
+            model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['content_extractor']+MODEL_EXT)
             if files.load_and_assign_npz(
                     sess=self.sess,
                     name=model_path,
@@ -950,8 +965,10 @@ class SRNTT(object):
 
             # load the specific conditional texture transfer model, specified by save_dir
             if self.save_dir is None:
+                ### 指定的 save_dir 不存在, 从 srntt_model_path 中加载预训练模型
                 if use_init_model_only:
-                    model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['init'])
+                    ## 加载只使用 loss_init 训练的模型
+                    model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['init']+MODEL_EXT)
                     if files.load_and_assign_npz(
                             sess=self.sess,
                             name=model_path,
@@ -961,7 +978,8 @@ class SRNTT(object):
                         logging.error('FAILED load %s' % model_path)
                         exit(0)
                 else:
-                    model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['conditional_texture_transfer'])
+                    ## 加载训练的迁移模型
+                    model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['conditional_texture_transfer']+MODEL_EXT)
                     if files.load_and_assign_npz(
                             sess=self.sess,
                             name=model_path,
@@ -971,8 +989,14 @@ class SRNTT(object):
                         logging.error('FAILED load %s' % model_path)
                         exit(0)
             else:
+                ### 从指定的 save_dir 中加载模型
                 if use_init_model_only:
-                    model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init'])
+                    ## 加载只使用 loss_init 训练的模型
+                    if model_epoch == -1:
+                        init_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']+'*'+MODEL_EXT)))
+                    else:
+                        init_model_latest = model_epoch
+                    model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']+'_E{:03d}'.format(init_model_latest)+MODEL_EXT)
                     if files.load_and_assign_npz(
                             sess=self.sess,
                             name=model_path,
@@ -982,8 +1006,12 @@ class SRNTT(object):
                         logging.error('FAILED load %s' % model_path)
                         exit(0)
                 else:
-                    model_path = join(self.save_dir, MODEL_FOLDER,
-                                      SRNTT_MODEL_NAMES['conditional_texture_transfer'])
+                    ## 加载训练的迁移模型
+                    if model_epoch == -1:
+                        pre_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer']+'*'+MODEL_EXT)))
+                    else:
+                        pre_model_latest = model_epoch
+                    model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer']+'_E{:03d}'.format(pre_model_latest)+MODEL_EXT)
                     if files.load_and_assign_npz(
                             sess=self.sess,
                             name=model_path,
@@ -1144,6 +1172,7 @@ class SRNTT(object):
             ref_dir=None,  # reference images
             use_pretrained_model=True,
             use_init_model_only=False,  # the init model is trained only with the reconstruction loss
+            model_epoch = -1,
             use_weight_map=False,
             result_dir=None,
             ref_scale=1.0,
@@ -1299,8 +1328,9 @@ class SRNTT(object):
             logging.info('Loading models ...')
             self.sess.run(tf.global_variables_initializer())
 
+            ### 加载预训练的 content extractor, 存放在 srntt_model_path 中
             # load pre-trained content extractor, including upscaling.
-            model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['content_extractor'])
+            model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['content_extractor']+MODEL_EXT)
             if files.load_and_assign_npz(
                     sess=self.sess,
                     name=model_path,
@@ -1310,8 +1340,10 @@ class SRNTT(object):
 
             # load the specific conditional texture transfer model, specified by save_dir
             if self.save_dir is None:
+                ### 指定的 save_dir 不存在, 从 srntt_model_path 中加载预训练模型
                 if use_init_model_only:
-                    model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['init'])
+                    ## 加载只使用 loss_init 训练的模型
+                    model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['init']+MODEL_EXT)
                     if files.load_and_assign_npz(
                             sess=self.sess,
                             name=model_path,
@@ -1321,7 +1353,8 @@ class SRNTT(object):
                         logging.error('FAILED load %s' % model_path)
                         exit(0)
                 else:
-                    model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['conditional_texture_transfer'])
+                    ## 加载训练的迁移模型
+                    model_path = join(self.srntt_model_path, SRNTT_MODEL_NAMES['conditional_texture_transfer']+MODEL_EXT)
                     if files.load_and_assign_npz(
                             sess=self.sess,
                             name=model_path,
@@ -1331,8 +1364,14 @@ class SRNTT(object):
                         logging.error('FAILED load %s' % model_path)
                         exit(0)
             else:
+                ### 从指定的 save_dir 中加载模型
                 if use_init_model_only:
-                    model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init'])
+                    ## 加载只使用 loss_init 训练的模型
+                    if model_epoch == -1:
+                        init_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']+'*'+MODEL_EXT)))
+                    else:
+                        init_model_latest = model_epoch
+                    model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']+'_E{:03d}'.format(init_model_latest)+MODEL_EXT)
                     if files.load_and_assign_npz(
                             sess=self.sess,
                             name=model_path,
@@ -1342,8 +1381,12 @@ class SRNTT(object):
                         logging.error('FAILED load %s' % model_path)
                         exit(0)
                 else:
-                    model_path = join(self.save_dir, MODEL_FOLDER,
-                                      SRNTT_MODEL_NAMES['conditional_texture_transfer'])
+                    ## 加载训练的迁移模型
+                    if model_epoch == -1:
+                        pre_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer']+'*'+MODEL_EXT)))
+                    else:
+                        pre_model_latest = model_epoch
+                    model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer']+'_E{:03d}'.format(pre_model_latest)+MODEL_EXT)
                     if files.load_and_assign_npz(
                             sess=self.sess,
                             name=model_path,
