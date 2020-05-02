@@ -58,6 +58,8 @@ parser.add_argument('--use_lower_layers_in_per_loss', type=str2bool, default=Fal
 parser.add_argument('--result_dir', type=str, default='result', help='dir of saving testing results')
 parser.add_argument('--ref_scale', type=float, default=1.0)
 parser.add_argument('--is_original_image', type=str2bool, default=True)
+parser.add_argument('--noise_mean', type=float, default=0, help='add Gaussian noise on swapped feature when test with ref')
+parser.add_argument('--noise_sigma', type=float, default=0, help='add Gaussian noise on swapped feature when test with ref')
 
 args = parser.parse_args()
 
@@ -205,6 +207,8 @@ else:
         use_weight_map=args.use_weight_map,
         result_dir=args.result_dir,
         ref_scale=args.ref_scale,
-        is_original_image=args.is_original_image
+        is_original_image=args.is_original_image,
+        noise_mean=args.noise_mean,
+        noise_sigma=args.noise_sigma
     )
 

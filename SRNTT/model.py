@@ -6,6 +6,7 @@ from os import makedirs, environ
 from shutil import rmtree
 from .vgg19 import *
 from .swap import *
+from .visualization import *
 from glob import glob
 from scipy.misc import imread, imresize, imsave, imrotate
 from .download_vgg19_model import *
@@ -794,6 +795,8 @@ class SRNTT(object):
             result_dir=None,
             ref_scale=1.0,
             is_original_image=True,
+            noise_mean=0,
+            noise_sigma=0,
             max_batch_size=16,
             save_ref=True
     ):
@@ -1026,25 +1029,26 @@ class SRNTT(object):
                      '**********')
 
         matching_layer = ['relu3_1', 'relu2_1', 'relu1_1']
+        feature_scale = [1/4, 1/2, 1]
 
         logging.info('Get VGG19 Feature Maps')
 
         logging.info('\t[1/2] Getting feature map of Ref image ...')
         t_start = time.time()
-        map_ref = []
+        map_ref = [] # 多张参考图的 [[relu3_1, relu2_1, relu1_1], ...]
         for i in img_ref:
             map_ref.append(
                 self.net_vgg19.get_layer_output(
                     sess=self.sess, layer_name=matching_layer,
                     feed_image=i)
             )
-        styles = [[] for _ in xrange(len(matching_layer))]
+        styles = [[] for _ in xrange(len(matching_layer))] # 多张参考图的 [[relu3_1, ...], [relu2_1, ...], [relu1_1, ...]]
         for i in map_ref:
             for j in xrange(len(styles)):
                 styles[j].append(i[j])
 
         logging.info('\t[2/2] Getting feature map of LR->SR Ref image ...')
-        map_ref_sr = []
+        map_ref_sr = [] # 多张参考图LR/SR后的 [relu3_1, ...]
         for i in img_ref:
             img_ref_downscale = imresize(i, .25, interp='bicubic')
             img_ref_upscale = imresize(img_ref_downscale, 4., interp='bicubic')
@@ -1056,7 +1060,7 @@ class SRNTT(object):
 
         # swap ref to in
         logging.info('Patch-Wise Matching and Swapping')
-        for idx, patch in enumerate(img_input):
+        for idx, patch in enumerate(img_input): # 同一张测试图的不同patch
             logging.info('\tPatch %03d/%03d' % (idx + 1, img_input.shape[0]))
 
             # skip if the results exists
@@ -1076,6 +1080,33 @@ class SRNTT(object):
                 other_styles=styles[1:],
                 is_weight=use_weight_map
             )
+
+            logging.info('\tAdd Gaussian noise of {} mean and {} std on swapped features ...'.format(noise_mean, noise_sigma))
+            for i in range(len(map_target)):
+                logging.info('\t\tOriginal Map {}:'.format(matching_layer[i]))
+                logging.info('\t\t\t( min, max): ({:.3f}, {:.3f})'.format(map_target[i].min(), map_target[i].max()))
+                logging.info('\t\t\t(mean, std): ({:.3f}, {:.3f})'.format(map_target[i].mean(), map_target[i].std()))
+                logging.info('\t\t\tVisualize...')
+                visualize_feature(map_target[i], tag=matching_layer[i], prefix='{:03d}_ori'.format(idx + 1),
+                                save_dir=join(result_dir, 'tmp'), cmap_level='self',
+                                outlier=None, scale=0.01/feature_scale[i], verbose=0)
+
+                noise = np.random.randn(map_target[i].shape) * noise_sigma + noise_mean
+                map_target_temp = np.copy(map_target[i])
+                map_target[i] += noise
+                err = map_target[i] - map_target_temp
+
+                logging.info('\t\tNoisy Map {}:'.format(matching_layer[i]))
+                logging.info('\t\t\t( min, max): ({:.3f}, {:.3f})'.format(map_target[i].min(), map_target[i].max()))
+                logging.info('\t\t\t(mean, std): ({:.3f}, {:.3f})'.format(map_target[i].mean(), map_target[i].std()))
+                logging.info('\t\t\tVisualize...')
+                visualize_feature(map_target[i], tag=matching_layer[i], prefix='{:03d}_noise'.format(idx + 1),
+                                save_dir=join(result_dir, 'tmp'), cmap_level='self',
+                                outlier=None, scale=0.01/feature_scale[i], verbose=0)
+                logging.info('\t\tCompare to Original Map:')
+                logging.info('\t\t\tNorm: {:.3f}'.format(np.linalg.norm(err)))
+                logging.info('\t\t\tRMSE: {:.3f}'.format(np.sqrt(np.mean(err**2))))
+
 
             logging.info('Obtain SR patches')
             if use_weight_map:
@@ -1113,7 +1144,7 @@ class SRNTT(object):
         out_srntt_files = sorted(glob(join(result_dir, 'tmp', 'srntt_*.png')))
         out_upscale_files = sorted(glob(join(result_dir, 'tmp', 'upscale_*.png')))
 
-        if grids is not None:
+        if grids is not None: # 重组patch
             patch_size = grids[0, 2]
             h_l, w_l = grids[-1, 0] + patch_size, grids[-1, 1] + patch_size
             out_upscale_large = np.zeros((h_l, w_l, 3), dtype=np.float32)
