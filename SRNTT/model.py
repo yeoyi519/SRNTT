@@ -3,6 +3,7 @@ from .tensorlayer import *
 from .tensorlayer.layers import *
 from os.path import join, exists, split, isfile
 from os import makedirs, environ
+from datetime import datetime
 from shutil import rmtree
 from .vgg19 import *
 from .swap import *
@@ -22,7 +23,7 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)-15s %(name)-5s %(levelname)-8s %(message)s',
-    filename='SRNTT.log'
+    filename='SRNTT_{}.log'.format(datetime.now().strftime('%y%m%d-%H%M%S'))
 )
 console = logging.StreamHandler()
 console.setLevel(logging.INFO)
@@ -553,7 +554,7 @@ class SRNTT(object):
             pre_model_latest = 0
             if use_init_model_only:
                 ## 加载只使用 loss_init 训练的模型, 继续训练它(loss_init, loss)
-                init_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']+'*'+MODEL_EXT)))
+                init_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']+'_E*'+MODEL_EXT)))
                 model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']+'_E{:03d}'.format(init_model_latest)+MODEL_EXT)
                 if files.load_and_assign_npz(
                         sess=sess,
@@ -566,7 +567,7 @@ class SRNTT(object):
                     logging.warning('FAILED load %s' % model_path)
             elif use_pretrained_model:
                 ## 加载之前训练的迁移模型, 继续训练它(loss_init, loss)
-                pre_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer']+'*'+MODEL_EXT)))
+                pre_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer']+'_E*'+MODEL_EXT)))
                 model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer']+'_E{:03d}'.format(pre_model_latest)+MODEL_EXT)
                 if files.load_and_assign_npz(
                         sess=sess,
@@ -795,8 +796,12 @@ class SRNTT(object):
             result_dir=None,
             ref_scale=1.0,
             is_original_image=True,
+            clip_fea=False,
+            noise_target='swapped',
             noise_mean=0,
             noise_sigma=0,
+            visual_fea=True,
+            srntt_only=False,
             max_batch_size=16,
             save_ref=True
     ):
@@ -839,6 +844,7 @@ class SRNTT(object):
             img_hr = img_input[0:h, 0:w, ::]
             img_input = imresize(img_hr, .25, interp='bicubic')
             h, w, _ = img_input.shape
+            img_hr_copy = np.copy(img_hr)
         img_input_copy = np.copy(img_input)
 
         if h * w * 16 > SRNTT.MAX_IMAGE_SIZE:  # avoid OOM
@@ -861,6 +867,29 @@ class SRNTT(object):
         else:
             grids = None
             img_input = np.expand_dims(img_input, axis=0)
+
+        if img_hr is not None:
+            if h * w * 16 > SRNTT.MAX_IMAGE_SIZE:  # avoid OOM
+                H, W, _ = img_hr.shape
+                # split img_hr into patches
+                _patches = []
+                _grids = []
+                _patch_size = 128 * 4
+                _stride = 100 * 4
+                for ind_row in range(0, H - (_patch_size - _stride), _stride):
+                    for ind_col in range(0, W - (_patch_size - _stride), _stride):
+                        patch = img_hr[ind_row:ind_row + _patch_size, ind_col:ind_col + _patch_size, :]
+                        if patch.shape != (_patch_size, _patch_size, 3):
+                            patch = np.pad(patch,
+                                        ((0, _patch_size - patch.shape[0]), (0, _patch_size - patch.shape[1]), (0, 0)),
+                                        'reflect')
+                        _patches.append(patch)
+                        _grids.append((ind_row, ind_col, _patch_size))
+                _grids = np.stack(_grids, axis=0)
+                img_hr = np.stack(_patches, axis=0)
+            else:
+                _grids = None
+                img_hr = np.expand_dims(img_hr, axis=0)
 
         # check ref_dir
         img_ref = []
@@ -996,7 +1025,7 @@ class SRNTT(object):
                 if use_init_model_only:
                     ## 加载只使用 loss_init 训练的模型
                     if model_epoch == -1:
-                        init_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']+'*'+MODEL_EXT)))
+                        init_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']+'_E*'+MODEL_EXT)))
                     else:
                         init_model_latest = model_epoch
                     model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']+'_E{:03d}'.format(init_model_latest)+MODEL_EXT)
@@ -1011,7 +1040,7 @@ class SRNTT(object):
                 else:
                     ## 加载训练的迁移模型
                     if model_epoch == -1:
-                        pre_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer']+'*'+MODEL_EXT)))
+                        pre_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer']+'_E*'+MODEL_EXT)))
                     else:
                         pre_model_latest = model_epoch
                     model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer']+'_E{:03d}'.format(pre_model_latest)+MODEL_EXT)
@@ -1030,6 +1059,7 @@ class SRNTT(object):
 
         matching_layer = ['relu3_1', 'relu2_1', 'relu1_1']
         feature_scale = [1/4, 1/2, 1]
+        clip_fea_max = [490, 378, 73] # 90%
 
         logging.info('Get VGG19 Feature Maps')
 
@@ -1067,6 +1097,15 @@ class SRNTT(object):
             if exists(join(result_dir, 'tmp', 'srntt_%05d.png' % idx)):
                 continue
 
+            if img_hr is not None:
+                logging.info('\tGetting feature map of input HR image ...')
+                patch_hr = img_hr[idx]
+                map_hr = self.net_vgg19.get_layer_output(
+                        sess=self.sess, layer_name=matching_layer, feed_image=patch_hr)
+                map_hr = [np.squeeze(m) for m in map_hr]
+            else:
+                map_hr = None
+
             logging.info('\tGetting feature map of input LR image ...')
             img_input_upscale = imresize(patch, 4., interp='bicubic')
             map_sr = self.net_vgg19.get_layer_output(
@@ -1081,32 +1120,59 @@ class SRNTT(object):
                 is_weight=use_weight_map
             )
 
-            logging.info('\tAdd Gaussian noise of {} mean and {} std on swapped features ...'.format(noise_mean, noise_sigma))
+            logging.info('\tAdd Gaussian noise of {} mean and {} std on {} features ...'.format(noise_mean, noise_sigma, noise_target))
             for i in range(len(map_target)):
-                logging.info('\t\tOriginal Map {}:'.format(matching_layer[i]))
+                logging.info('\t\t>>>>> Original Map {}: {}'.format(matching_layer[i], map_target[i].shape))
                 logging.info('\t\t\t( min, max): ({:.3f}, {:.3f})'.format(map_target[i].min(), map_target[i].max()))
                 logging.info('\t\t\t(mean, std): ({:.3f}, {:.3f})'.format(map_target[i].mean(), map_target[i].std()))
-                logging.info('\t\t\tVisualize...')
-                visualize_feature(map_target[i], tag=matching_layer[i], prefix='{:03d}_ori'.format(idx + 1),
-                                save_dir=join(result_dir, 'tmp'), cmap_level='self',
-                                outlier=None, scale=0.01/feature_scale[i], verbose=0)
+                if visual_fea:
+                    logging.info('\t\t\tVisualize...')
+                    visualize_feature(map_target[i], tag=matching_layer[i], prefix='{:03d}_ori'.format(idx + 1),
+                                    save_dir=join(result_dir, 'tmp'), data_format='channel_last', cmap_level='self',
+                                    outlier=None, scale=0.01/feature_scale[i], verbose=0)
 
-                noise = np.random.randn(map_target[i].shape) * noise_sigma + noise_mean
-                map_target_temp = np.copy(map_target[i])
-                map_target[i] += noise
+                if noise_target == 'swapped':
+                    H, W, C = map_target[i].shape
+                    noise = np.random.randn(H, W, C) * noise_sigma + noise_mean
+                    map_target_temp = np.copy(map_target[i])
+                    map_target[i] += noise
+                elif noise_target == 'hr':
+                    assert map_hr is not None
+                    H, W, C = map_hr[i].shape
+                    noise = np.random.randn(H, W, C) * noise_sigma + noise_mean
+                    map_target_temp = np.copy(map_target[i])
+                    map_target[i] = map_hr[i] + noise
+
+                if clip_fea:
+                    map_target[i][map_target[i] > clip_fea_max[i]] = clip_fea_max[i]
                 err = map_target[i] - map_target_temp
 
-                logging.info('\t\tNoisy Map {}:'.format(matching_layer[i]))
+                logging.info('\t\t  >>> Noisy Map on {}:'.format(noise_target))
                 logging.info('\t\t\t( min, max): ({:.3f}, {:.3f})'.format(map_target[i].min(), map_target[i].max()))
                 logging.info('\t\t\t(mean, std): ({:.3f}, {:.3f})'.format(map_target[i].mean(), map_target[i].std()))
-                logging.info('\t\t\tVisualize...')
-                visualize_feature(map_target[i], tag=matching_layer[i], prefix='{:03d}_noise'.format(idx + 1),
-                                save_dir=join(result_dir, 'tmp'), cmap_level='self',
-                                outlier=None, scale=0.01/feature_scale[i], verbose=0)
-                logging.info('\t\tCompare to Original Map:')
+                if visual_fea:
+                    logging.info('\t\t\tVisualize...')
+                    visualize_feature(map_target[i], tag=matching_layer[i], prefix='{:03d}_noise'.format(idx + 1),
+                                    save_dir=join(result_dir, 'tmp'), data_format='channel_last', cmap_level='self',
+                                    outlier=None, scale=0.01/feature_scale[i], verbose=0)
                 logging.info('\t\t\tNorm: {:.3f}'.format(np.linalg.norm(err)))
                 logging.info('\t\t\tRMSE: {:.3f}'.format(np.sqrt(np.mean(err**2))))
 
+                if map_hr is not None:
+                    logging.info('\t\t  >>> HR Map:')
+                    logging.info('\t\t\t( min, max): ({:.3f}, {:.3f})'.format(map_hr[i].min(), map_hr[i].max()))
+                    logging.info('\t\t\t(mean, std): ({:.3f}, {:.3f})'.format(map_hr[i].mean(), map_hr[i].std()))
+                    if visual_fea:
+                        logging.info('\t\t\tVisualize...')
+                        visualize_feature(map_hr[i], tag=matching_layer[i], prefix='{:03d}_hr'.format(idx + 1),
+                                        save_dir=join(result_dir, 'tmp'), data_format='channel_last', cmap_level='self',
+                                        outlier=None, scale=0.01/feature_scale[i], verbose=0)
+                    err = map_target_temp - map_hr[i]
+                    logging.info('\t\t\tOri Norm: {:.3f}'.format(np.linalg.norm(err)))
+                    logging.info('\t\t\tOri RMSE: {:.3f}'.format(np.sqrt(np.mean(err**2))))
+                    err = map_target[i] - map_hr[i]
+                    logging.info('\t\t\tNoisy Norm: {:.3f}'.format(np.linalg.norm(err)))
+                    logging.info('\t\t\tNoisy RMSE: {:.3f}'.format(np.sqrt(np.mean(err**2))))
 
             logging.info('Obtain SR patches')
             if use_weight_map:
@@ -1179,23 +1245,30 @@ class SRNTT(object):
             f.close()
 
         # save results
-        # save HR image if it exists
-        if img_hr is not None:
-            imsave(join(result_dir, 'HR.png'), img_hr)
-        # save LR (input) image
-        imsave(join(result_dir, 'LR.png'), img_input_copy)
-        # save reference image(s)
-        if save_ref:
-            for idx, ref in enumerate(img_ref):
-                imsave(join(result_dir, 'Ref_%02d.png' % idx), ref)
-        # save bicubic
-        imsave(join(result_dir, 'Bicubic.png'), imresize(img_input_copy, 4., interp='bicubic'))
-        # save SR images
-        imsave(join(result_dir, 'Upscale.png'), np.array(out_upscale).squeeze().round().clip(0, 255).astype(np.uint8))
-        imsave(join(result_dir, 'SRNTT.png'), np.array(out_srntt).squeeze().round().clip(0, 255).astype(np.uint8))
+        if not srntt_only:
+            # save HR image if it exists
+            if img_hr is not None:
+                imsave(join(result_dir, 'HR.png'), img_hr_copy)
+            # save LR (input) image
+            imsave(join(result_dir, 'LR.png'), img_input_copy)
+            # save reference image(s)
+            if save_ref:
+                for idx, ref in enumerate(img_ref):
+                    imsave(join(result_dir, 'Ref_%02d.png' % idx), ref)
+            # save bicubic
+            img_bic = imresize(img_input_copy, 4., interp='bicubic')
+            imsave(join(result_dir, 'Bicubic.png'), img_bic)
+            # save SR images
+            img_upscale = np.array(out_upscale).squeeze().round().clip(0, 255).astype(np.uint8)
+            imsave(join(result_dir, 'Upscale.png'), img_upscale)
+        else:
+            img_bic = None
+            img_upscale = None
+        img_srntt = np.array(out_srntt).squeeze().round().clip(0, 255).astype(np.uint8)
+        imsave(join(result_dir, 'SRNTT_m{}_s{}.png'.format(noise_mean, noise_sigma)), img_srntt)
         logging.info('Saved results to folder %s' % result_dir)
 
-        return np.array(out_srntt).squeeze().round().clip(0, 255).astype(np.uint8)
+        return img_hr_copy, img_input_copy, img_bic, img_upscale, img_srntt
 
     def test_without_ref(
             self,
@@ -1399,7 +1472,7 @@ class SRNTT(object):
                 if use_init_model_only:
                     ## 加载只使用 loss_init 训练的模型
                     if model_epoch == -1:
-                        init_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']+'*'+MODEL_EXT)))
+                        init_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']+'_E*'+MODEL_EXT)))
                     else:
                         init_model_latest = model_epoch
                     model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['init']+'_E{:03d}'.format(init_model_latest)+MODEL_EXT)
@@ -1414,7 +1487,7 @@ class SRNTT(object):
                 else:
                     ## 加载训练的迁移模型
                     if model_epoch == -1:
-                        pre_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer']+'*'+MODEL_EXT)))
+                        pre_model_latest = len(glob(join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer']+'_E*'+MODEL_EXT)))
                     else:
                         pre_model_latest = model_epoch
                     model_path = join(self.save_dir, MODEL_FOLDER, SRNTT_MODEL_NAMES['conditional_texture_transfer']+'_E{:03d}'.format(pre_model_latest)+MODEL_EXT)
@@ -1599,10 +1672,13 @@ class SRNTT(object):
             for idx, ref in enumerate(img_ref):
                 imsave(join(result_dir, 'Ref_%02d.png' % idx), ref)
         # save bicubic
-        imsave(join(result_dir, 'Bicubic.png'), imresize(img_input_copy, 4., interp='bicubic'))
+        img_bic = imresize(img_input_copy, 4., interp='bicubic')
+        imsave(join(result_dir, 'Bicubic.png'), img_bic)
         # save SR images
-        imsave(join(result_dir, 'Upscale.png'), np.array(out_upscale).squeeze().round().clip(0, 255).astype(np.uint8))
-        imsave(join(result_dir, 'SRNTT.png'), np.array(out_srntt).squeeze().round().clip(0, 255).astype(np.uint8))
+        img_upscale = np.array(out_upscale).squeeze().round().clip(0, 255).astype(np.uint8)
+        img_srntt = np.array(out_srntt).squeeze().round().clip(0, 255).astype(np.uint8)
+        imsave(join(result_dir, 'Upscale.png'), img_upscale)
+        imsave(join(result_dir, 'SRNTT.png'), img_srntt)
         logging.info('Saved results to folder %s' % result_dir)
 
-        return np.array(out_srntt).squeeze().round().clip(0, 255).astype(np.uint8)
+        return img_hr, img_input_copy, img_bic, img_upscale, img_srntt

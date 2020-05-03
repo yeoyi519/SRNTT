@@ -1,7 +1,9 @@
 data/*
+data_demo/*
 SRNTT/models/VGG19/*
 experiments/*
 results/*
+test/*
 demo_training_srntt/*
 demo_testing_srntt/*
 demo_testing_srntt-l2/*

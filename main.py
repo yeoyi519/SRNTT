@@ -1,6 +1,10 @@
 import os
+from os.path import join, isdir, basename, splitext
+from glob import glob
 from SRNTT.model import *
+from SRNTT.util import *
 import argparse
+import logging
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
@@ -58,8 +62,12 @@ parser.add_argument('--use_lower_layers_in_per_loss', type=str2bool, default=Fal
 parser.add_argument('--result_dir', type=str, default='result', help='dir of saving testing results')
 parser.add_argument('--ref_scale', type=float, default=1.0)
 parser.add_argument('--is_original_image', type=str2bool, default=True)
-parser.add_argument('--noise_mean', type=float, default=0, help='add Gaussian noise on swapped feature when test with ref')
-parser.add_argument('--noise_sigma', type=float, default=0, help='add Gaussian noise on swapped feature when test with ref')
+parser.add_argument('--clip_fea', type=str2bool, default=False, help='clip swapped or hr feature which for srntt')
+parser.add_argument('--noise_target', type=str, default='swapped', choices=['swapped', 'hr'], help='add Gaussian noise on swapped or hr feature when test with ref')
+parser.add_argument('--noise_mean', type=float, default=0, help='add Gaussian noise on swapped or hr feature when test with ref')
+parser.add_argument('--noise_sigma', type=float, default=0, help='add Gaussian noise on swapped or hr feature when test with ref')
+parser.add_argument('--visual_fea', type=str2bool, default=True, help='visualize swapped and hr feature')
+parser.add_argument('--srntt_only', type=str2bool, default=False, help='save srntt result and calculate srntt metric only')
 
 args = parser.parse_args()
 
@@ -198,17 +206,71 @@ else:
         num_res_blocks=args.num_res_blocks,
     )
 
-    srntt.test(
-        input_dir=args.input_dir,
-        ref_dir=args.ref_dir,
-        use_pretrained_model=args.use_pretrained_model,
-        use_init_model_only=args.use_init_model_only,
-        model_epoch=args.model_epoch,
-        use_weight_map=args.use_weight_map,
-        result_dir=args.result_dir,
-        ref_scale=args.ref_scale,
-        is_original_image=args.is_original_image,
-        noise_mean=args.noise_mean,
-        noise_sigma=args.noise_sigma
-    )
+    logger = logging.getLogger('')
+    if isdir(args.input_dir) and isdir(args.ref_dir):
+        imgs = sorted(glob(join(args.input_dir, '*')))
+        refs = sorted(glob(join(args.ref_dir, '*')))
+        if not args.srntt_only:
+            bic_psnr, bic_ssim = [], []
+            upscale_psnr, upscale_ssim = [], []
+        srntt_psnr, srntt_ssim = [], []
+        for img, ref in zip(imgs, refs):
+            img_name = splitext(basename(img))[0]
+            ref_name = splitext(basename(ref))[0]
+            img_hr, img_lr, img_bic, img_upscale, img_srntt = srntt.test(
+                input_dir=img,
+                ref_dir=ref,
+                use_pretrained_model=args.use_pretrained_model,
+                use_init_model_only=args.use_init_model_only,
+                model_epoch=args.model_epoch,
+                use_weight_map=args.use_weight_map,
+                result_dir=join(args.result_dir, img_name, ref_name),
+                ref_scale=args.ref_scale,
+                is_original_image=args.is_original_image,
+                clip_fea=args.clip_fea,
+                noise_target=args.noise_target,
+                noise_mean=args.noise_mean,
+                noise_sigma=args.noise_sigma,
+                visual_fea=args.visual_fea,
+                srntt_only=args.srntt_only
+            )
+            logger.info('Img: {}, Ref: {}'.format(img_name, ref_name))
+            if not args.srntt_only:
+                bic_psnr.append(calculate_psnr(img_bic, img_hr))
+                bic_ssim.append(calculate_ssim(img_bic, img_hr))
+                logger.info('\tBicubic - PSNR(dB): {:.3f}, SSIM: {:.3f}'.format(bic_psnr[-1], bic_ssim[-1]))
+                upscale_psnr.append(calculate_psnr(img_upscale, img_hr))
+                upscale_ssim.append(calculate_ssim(img_upscale, img_hr))
+                logger.info('\tUpscale - PSNR(dB): {:.3f}, SSIM: {:.3f}'.format(upscale_psnr[-1], upscale_ssim[-1]))
+            srntt_psnr.append(calculate_psnr(img_srntt, img_hr))
+            srntt_ssim.append(calculate_ssim(img_srntt, img_hr))
+            logger.info('\tSRNTT   - PSNR(dB): {:.3f}, SSIM: {:.3f}'.format(srntt_psnr[-1], srntt_ssim[-1]))
+        logger.info('Average:')
+        if not args.srntt_only:
+            logger.info('\tBicubic - PSNR(dB): {:.3f}, SSIM: {:.3f}'.format(np.mean(bic_psnr), np.mean(bic_ssim)))
+            logger.info('\tUpscale - PSNR(dB): {:.3f}, SSIM: {:.3f}'.format(np.mean(upscale_psnr), np.mean(upscale_ssim)))
+        logger.info('\tSRNTT   - PSNR(dB): {:.3f}, SSIM: {:.3f}'.format(np.mean(srntt_psnr), np.mean(srntt_ssim)))
+    else:
+        img_hr, img_lr, img_bic, img_upscale, img_srntt = srntt.test(
+            input_dir=args.input_dir,
+            ref_dir=args.ref_dir,
+            use_pretrained_model=args.use_pretrained_model,
+            use_init_model_only=args.use_init_model_only,
+            model_epoch=args.model_epoch,
+            use_weight_map=args.use_weight_map,
+            result_dir=args.result_dir,
+            ref_scale=args.ref_scale,
+            is_original_image=args.is_original_image,
+            clip_fea=args.clip_fea,
+            noise_target=args.noise_target,
+            noise_mean=args.noise_mean,
+            noise_sigma=args.noise_sigma,
+            visual_fea=args.visual_fea,
+            srntt_only=args.srntt_only
+        )
+        logger.info('Img: {}, Ref: {}'.format(args.input_dir, args.ref_dir))
+        if not args.srntt_only:
+            logger.info('\tBicubic - PSNR(dB): {:.3f}, SSIM: {:.3f}'.format(calculate_psnr(img_bic, img_hr), calculate_ssim(img_bic, img_hr)))
+            logger.info('\tUpscale - PSNR(dB): {:.3f}, SSIM: {:.3f}'.format(calculate_psnr(img_upscale, img_hr), calculate_ssim(img_upscale, img_hr)))
+        logger.info('\tSRNTT   - PSNR(dB): {:.3f}, SSIM: {:.3f}'.format(calculate_psnr(img_srntt, img_hr), calculate_ssim(img_srntt, img_hr)))
 

@@ -6,14 +6,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-def visualize_feature(feature, tag, prefix, save_dir, every_image=64,
-                    cmap_level='global', vmin=None, vmax=None,
+def visualize_feature(feature, tag, prefix, save_dir, data_format='channel_first',
+                    every_image=64, cmap_level='global', vmin=None, vmax=None,
                     outlier=None, vmean=None, vstd=None, scale=0.01, verbose=1):
     """
         可视化单个特征的每个通道, 汇总在数张图中
-    feature: numpy array, (B, C, H, W), B=1
+    feature: numpy array, (B, C, H, W), B = 1
     tag: feature type
     prefix: before tag in save name
+    data_format:
+        channel_first, (B, C, H, W), B = 1
+        channel_last, (B, H, W, C), B = 1
     every_image: every_image channels in single image
     cmap_level:
         global, all features in model, need to specify vmin and vmax, 查看模型整个周期特征间的演变
@@ -25,10 +28,11 @@ def visualize_feature(feature, tag, prefix, save_dir, every_image=64,
     scale: setting figure size to (W * scale * np.sqrt(every_image), H * scale * np.sqrt(every_image)) for visualization
     """
     feature = feature.copy().squeeze()
-    if feature.ndim == 3:
-        C, H, W = feature.shape
-    else:
-        raise "Only support 3D feature (C, H, W)"
+    if feature.ndim != 3:
+        raise "Only support 3D feature (C, H, W)/(H, W, C)!"
+    if data_format == 'channel_last':
+        feature = np.transpose(feature, [2, 0, 1])
+    C, H, W = feature.shape
 
     if verbose:
         logger = logging.getLogger('base')
@@ -107,18 +111,23 @@ def visualize_feature(feature, tag, prefix, save_dir, every_image=64,
     plt.close('all')
 
 
-def visualize_channel(feature, tag, prefix, save_dir, verbose=1):
+def visualize_channel(feature, tag, prefix, save_dir, data_format='channel_first', verbose=1):
     """
         原尺寸保存单个特征的每个通道
-    feature: numpy array, (B, C, H, W) or (B, N, C, H, W), B=1
+    feature: numpy array, (B, C, H, W) or (B, N, C, H, W), B = 1
     tag: feature type
     prefix: before tag in save name
+    data_format:
+        channel_first, (B, C, H, W) or (B, N, C, H, W), B = 1
+        channel_last, (B, H, W, C) or (B, N, H, W, C), B = 1
     """
     if verbose:
         logger = logging.getLogger('base')
 
-    feature = feature.squeeze()
+    feature = feature.copy().squeeze()
     if feature.ndim == 3:
+        if data_format == 'channel_last':
+            feature = np.transpose(feature, [2, 0, 1])
         C, H, W = feature.shape
         for k in range(C):
             img_name = '{}_{}_C{}.png'.format(prefix, tag, k)
@@ -127,6 +136,8 @@ def visualize_channel(feature, tag, prefix, save_dir, verbose=1):
             # if verbose:
             #     logger.info('{} saved.'.format(img_name))
     elif feature.ndim == 4:
+        if data_format == 'channel_last':
+            feature = np.transpose(feature, [0, 3, 1, 2])
         N, C, H, W = feature.shape
         for i in range(N):
             for j in range(C):
@@ -136,17 +147,20 @@ def visualize_channel(feature, tag, prefix, save_dir, verbose=1):
                 # if verbose:
                 #     logger.info('{} saved.'.format(img_name))
     else:
-        raise "Only support 3D feature (C, H, W) or 4D feature (N, C, H, W)"
+        raise "Only support 3D feature (C, H, W)/(H, W, C) or 4D feature (N, C, H, W)/(N, H, W, C)!"
 
     if verbose:
         logger.info('{}, {} channels saved.'.format(prefix, tag))
 
 
-def visualize_weight(weight, tag, save_dir, scale=1, verbose=1):
+def visualize_weight(weight, tag, save_dir, data_format='channel_first', scale=1, verbose=1):
     """
         可视化权重
     weight: numpy array, (Co, Ci, kH, kW)
     tag: weight name
+    data_format:
+        channel_first, (Co, Ci, kH, kW)
+        channel_last, (kH, kW, Ci, Co)
     scale: setting figure size
     """
     if verbose:
@@ -154,13 +168,15 @@ def visualize_weight(weight, tag, save_dir, scale=1, verbose=1):
 
     weight = weight.copy().squeeze()
     if weight.ndim == 4:
+        if data_format == 'channel_last':
+            weight = np.transpose(weight, [3, 2, 0, 1])
         Co, Ci, kH, kW = weight.shape
     elif weight.ndim == 2: # kH=kW=1
         if verbose:
             logger.warning("Won't visualize weight of {} with shape {}, because it's kernel size is 1.".format(tag, weight.shape))
         return
     else:
-        raise "Only support 4D weight (Co, Ci, kH, kW)"
+        raise "Only support 4D weight (Co, Ci, kH, kW)/(kH, kW, Ci, Co)!"
 
     channel_mean = weight.mean(axis=(2, 3))
     channel_std = weight.std(axis=(2, 3))
@@ -212,6 +228,4 @@ def visualize_weight(weight, tag, save_dir, scale=1, verbose=1):
 
     # _tkinter.TclError: not enough free memory for image buffer, 所以即开即关
     # plt.close('all')
-
-
 
