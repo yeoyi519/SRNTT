@@ -7,6 +7,7 @@ from datetime import datetime
 from shutil import rmtree
 from .vgg19 import *
 from .swap import *
+from .util import split_img, recon_patch
 from .visualization import *
 from glob import glob
 from scipy.misc import imread, imresize, imsave, imrotate
@@ -849,44 +850,15 @@ class SRNTT(object):
 
         if h * w * 16 > SRNTT.MAX_IMAGE_SIZE:  # avoid OOM
             # split img_input into patches
-            patches = []
-            grids = []
-            patch_size = 128
-            stride = 100
-            for ind_row in range(0, h - (patch_size - stride), stride):
-                for ind_col in range(0, w - (patch_size - stride), stride):
-                    patch = img_input[ind_row:ind_row + patch_size, ind_col:ind_col + patch_size, :]
-                    if patch.shape != (patch_size, patch_size, 3):
-                        patch = np.pad(patch,
-                                       ((0, patch_size - patch.shape[0]), (0, patch_size - patch.shape[1]), (0, 0)),
-                                       'reflect')
-                    patches.append(patch)
-                    grids.append((ind_row * 4, ind_col * 4, patch_size * 4))
-            grids = np.stack(grids, axis=0)
-            img_input = np.stack(patches, axis=0)
+            img_input, grids = split_img(img_input)
         else:
             grids = None
             img_input = np.expand_dims(img_input, axis=0)
 
         if img_hr is not None:
             if h * w * 16 > SRNTT.MAX_IMAGE_SIZE:  # avoid OOM
-                H, W, _ = img_hr.shape
                 # split img_hr into patches
-                _patches = []
-                _grids = []
-                _patch_size = 128 * 4
-                _stride = 100 * 4
-                for ind_row in range(0, H - (_patch_size - _stride), _stride):
-                    for ind_col in range(0, W - (_patch_size - _stride), _stride):
-                        patch = img_hr[ind_row:ind_row + _patch_size, ind_col:ind_col + _patch_size, :]
-                        if patch.shape != (_patch_size, _patch_size, 3):
-                            patch = np.pad(patch,
-                                        ((0, _patch_size - patch.shape[0]), (0, _patch_size - patch.shape[1]), (0, 0)),
-                                        'reflect')
-                        _patches.append(patch)
-                        _grids.append((ind_row, ind_col, _patch_size))
-                _grids = np.stack(_grids, axis=0)
-                img_hr = np.stack(_patches, axis=0)
+                img_hr, _grids = split_img(img_hr, 128 * 4, 100 * 4, 1)
             else:
                 _grids = None
                 img_hr = np.expand_dims(img_hr, axis=0)
@@ -1210,29 +1182,8 @@ class SRNTT(object):
         out_srntt_files = sorted(glob(join(result_dir, 'tmp', 'srntt_*.png')))
         out_upscale_files = sorted(glob(join(result_dir, 'tmp', 'upscale_*.png')))
 
-        if grids is not None: # 重组patch
-            patch_size = grids[0, 2]
-            h_l, w_l = grids[-1, 0] + patch_size, grids[-1, 1] + patch_size
-            out_upscale_large = np.zeros((h_l, w_l, 3), dtype=np.float32)
-            out_srntt_large = np.copy(out_upscale_large)
-            counter = np.zeros_like(out_srntt_large, dtype=np.float32)
-            for idx in xrange(len(grids)):
-                out_upscale_large[
-                grids[idx, 0]:grids[idx, 0] + patch_size,
-                grids[idx, 1]:grids[idx, 1] + patch_size, :] += imread(out_upscale_files[idx], mode='RGB').astype(np.float32)
-
-                out_srntt_large[
-                grids[idx, 0]:grids[idx, 0] + patch_size,
-                grids[idx, 1]:grids[idx, 1] + patch_size, :] += imread(out_srntt_files[idx], mode='RGB').astype(np.float32)
-
-                counter[
-                grids[idx, 0]:grids[idx, 0] + patch_size,
-                grids[idx, 1]:grids[idx, 1] + patch_size, :] += 1
-
-            out_upscale_large /= counter
-            out_srntt_large /= counter
-            out_upscale = out_upscale_large[:h * 4, :w * 4, :]
-            out_srntt = out_srntt_large[:h * 4, :w * 4, :]
+        if grids is not None:
+            out_upscale, out_srntt = recon_patch(img_input_copy, grids, out_upscale_files, out_srntt_files)
         else:
             out_upscale = imread(out_upscale_files[0], mode='RGB')
             out_srntt = imread(out_srntt_files[0], mode='RGB')
@@ -1312,21 +1263,7 @@ class SRNTT(object):
 
         if h * w * 16 > SRNTT.MAX_IMAGE_SIZE:  # avoid OOM
             # split img_input into patches
-            patches = []
-            grids = []
-            patch_size = 128
-            stride = 100
-            for ind_row in range(0, h - (patch_size - stride), stride):
-                for ind_col in range(0, w - (patch_size - stride), stride):
-                    patch = img_input[ind_row:ind_row + patch_size, ind_col:ind_col + patch_size, :]
-                    if patch.shape != (patch_size, patch_size, 3):
-                        patch = np.pad(patch,
-                                       ((0, patch_size - patch.shape[0]), (0, patch_size - patch.shape[1]), (0, 0)),
-                                       'reflect')
-                    patches.append(patch)
-                    grids.append((ind_row * 4, ind_col * 4, patch_size * 4))
-            grids = np.stack(grids, axis=0)
-            img_input = np.stack(patches, axis=0)
+            img_input, grids = split_img(img_input)
         else:
             grids = None
             img_input = np.expand_dims(img_input, axis=0)
@@ -1627,28 +1564,7 @@ class SRNTT(object):
         out_upscale_files = sorted(glob(join(result_dir, 'tmp', 'upscale_*.png')))
 
         if grids is not None:
-            patch_size = grids[0, 2]
-            h_l, w_l = grids[-1, 0] + patch_size, grids[-1, 1] + patch_size
-            out_upscale_large = np.zeros((h_l, w_l, 3), dtype=np.float32)
-            out_srntt_large = np.copy(out_upscale_large)
-            counter = np.zeros_like(out_srntt_large, dtype=np.float32)
-            for idx in xrange(len(grids)):
-                out_upscale_large[
-                grids[idx, 0]:grids[idx, 0] + patch_size,
-                grids[idx, 1]:grids[idx, 1] + patch_size, :] += imread(out_upscale_files[idx], mode='RGB').astype(np.float32)
-
-                out_srntt_large[
-                grids[idx, 0]:grids[idx, 0] + patch_size,
-                grids[idx, 1]:grids[idx, 1] + patch_size, :] += imread(out_srntt_files[idx], mode='RGB').astype(np.float32)
-
-                counter[
-                grids[idx, 0]:grids[idx, 0] + patch_size,
-                grids[idx, 1]:grids[idx, 1] + patch_size, :] += 1
-
-            out_upscale_large /= counter
-            out_srntt_large /= counter
-            out_upscale = out_upscale_large[:(h * 4), :(w * 4), :]
-            out_srntt = out_srntt_large[:(h * 4), :(w * 4), :]
+            out_upscale, out_srntt = recon_patch(img_input_copy, grids, out_upscale_files, out_srntt_files)
         else:
             out_upscale = imread(out_upscale_files[0], mode='RGB')
             out_srntt = imread(out_srntt_files[0], mode='RGB')

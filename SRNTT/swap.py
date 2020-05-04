@@ -111,8 +111,10 @@ class Swap(object):
 
         # normalize content and condition patches
         norm = np.sqrt(np.sum(np.square(patches), axis=(0, 1, 2)))
+        norm[norm==0] = 1
         patches_style_normed = patches / norm
         norm = np.sqrt(np.sum(np.square(patches_content), axis=(0, 1, 2)))
+        norm[norm==0] = 1
         patches_content_normed = patches_content / norm
         del norm, patches, patches_content
 
@@ -172,8 +174,8 @@ class Swap(object):
         count_map = np.zeros(shape=target_map.shape[:2])
         for i in range(max_idx.shape[0]):
             for j in range(max_idx.shape[1]):
-                target_map[i:i + self.patch_size, j:j + self.patch_size, :] += patches_style[:, :, :, max_idx[i, j]]
-                count_map[i:i + self.patch_size, j:j + self.patch_size] += 1.0
+                target_map[i * self.stride:i * self.stride + self.patch_size, j * self.stride:j * self.stride + self.patch_size, :] += patches_style[:, :, :, max_idx[i, j]]
+                count_map[i * self.stride:i * self.stride + self.patch_size, j * self.stride:j * self.stride + self.patch_size] += 1.0
         target_map = np.transpose(target_map, axes=(2, 0, 1)) / count_map
         target_map = np.transpose(target_map, axes=(1, 2, 0))
         maps.append(target_map)
@@ -192,8 +194,8 @@ class Swap(object):
                 count_map = np.zeros(shape=target_map.shape[:2])
                 for i in range(max_idx.shape[0]):
                     for j in range(max_idx.shape[1]):
-                        target_map[i*ratio:i*ratio + self.patch_size, j*ratio:j*ratio + self.patch_size, :] += patches_style[:, :, :, max_idx[i, j]]
-                        count_map[i*ratio:i*ratio + self.patch_size, j*ratio:j*ratio + self.patch_size] += 1.0
+                        target_map[i * self.stride:i * self.stride + self.patch_size, j * self.stride:j * self.stride + self.patch_size, :] += patches_style[:, :, :, max_idx[i, j]]
+                        count_map[i * self.stride:i * self.stride + self.patch_size, j * self.stride:j * self.stride + self.patch_size] += 1.0
                 target_map = np.transpose(target_map, axes=(2, 0, 1)) / count_map
                 target_map = np.transpose(target_map, axes=(1, 2, 0))
                 maps.append(target_map)
