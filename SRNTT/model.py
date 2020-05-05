@@ -306,6 +306,7 @@ class SRNTT(object):
             is_L1_loss=True,
             param_WGAN_GP=10,
             input_size=40,
+            use_ref_directly=False,
             use_weight_map=False,
             use_lower_layers_in_per_loss=False
     ):
@@ -334,7 +335,11 @@ class SRNTT(object):
         files_ref = sorted(glob(join(ref_dir, '*.png')))
         num_files = len(files_input)
 
-        assert num_files == len(files_ref) == len(files_map)
+        if use_ref_directly:
+            assert use_weight_map == False
+            assert num_files == len(files_ref)
+        else:
+            assert num_files == len(files_ref) == len(files_map)
 
         # ********************************************************************************
         # *** build graph
@@ -348,20 +353,20 @@ class SRNTT(object):
         #### (B, H, W, C)
         self.ground_truth = tf.placeholder(dtype=tf.float32, shape=[batch_size, input_size * 4, input_size * 4, 3])
 
-        # texture feature maps, range [0, ?]
-        #### relu3_1 (B, H//4, W//4, C), relu2_1 (B, H//2, W//2, C), relu1_1 (B, H, W, C)
-        self.maps = tuple([tf.placeholder(dtype=tf.float32, shape=[batch_size, m.shape[0], m.shape[1], m.shape[2]])
-                     for m in np.load(files_map[0], allow_pickle=True)['target_map']])
-
+        if use_ref_directly:
+            # reference images, range [0, 255]
+            self.ref = tf.placeholder(dtype=tf.float32, shape=[batch_size, input_size * 4, input_size * 4, 3])
+            self.net_vgg_ref = VGG19(self.ref, model_path=self.vgg19_model_path, final_layer='relu3_1')
+            self.maps = (self.net_vgg_ref.layers['relu3_1'], self.net_vgg_ref.layers['relu2_1'], self.net_vgg_ref.layers['relu1_1'])
+        else:
+            # texture feature maps, range [0, ?]
+            #### relu3_1 (B, H//4, W//4, C), relu2_1 (B, H//2, W//2, C), relu1_1 (B, H, W, C)
+            self.maps = tuple([tf.placeholder(dtype=tf.float32, shape=[batch_size, m.shape[0], m.shape[1], m.shape[2]])
+                        for m in np.load(files_map[0], allow_pickle=True)['target_map']])
 
         # weight maps
         #### (B, H//4, W//4)
         self.weights = tf.placeholder(dtype=tf.float32, shape=[batch_size, input_size, input_size])
-
-
-        # reference images, ranges[-1, 1]
-        #### not used
-        self.ref = tf.placeholder(dtype=tf.float32, shape=[batch_size, input_size, input_size, 3])
 
         # SRNTT network
         if use_weight_map:
@@ -510,12 +515,15 @@ class SRNTT(object):
                        for i in idx]
         samples_input = [imresize(img, (input_size, input_size), interp='bicubic').astype(np.float32) / 127.5 - 1
                       for img in samples_in]
-        samples_texture_map_tmp = [np.load(files_map[i], allow_pickle=True)['target_map'] for i in idx]
-        samples_texture_map = [[] for _ in range(len(samples_texture_map_tmp[0]))]
-        for s in samples_texture_map_tmp:
-            for i, item in enumerate(samples_texture_map):
-                item.append(s[i])
-        samples_texture_map = [np.array(b) for b in samples_texture_map]
+        if use_ref_directly:
+            samples_texture_ref = [imread(files_ref[i], mode='RGB').astype(np.float32) for i in idx]
+        else:
+            samples_texture_map_tmp = [np.load(files_map[i], allow_pickle=True)['target_map'] for i in idx]
+            samples_texture_map = [[] for _ in range(len(samples_texture_map_tmp[0]))]
+            for s in samples_texture_map_tmp:
+                for i, item in enumerate(samples_texture_map):
+                    item.append(s[i])
+            samples_texture_map = [np.array(b) for b in samples_texture_map]
         if use_weight_map:
             samples_weight_map = [np.pad(np.load(files_map[i], allow_pickle=True)['weights'], ((1, 1), (1, 1)), 'edge') for i in idx]
         else:
@@ -633,43 +641,69 @@ class SRNTT(object):
                     batch_imgs = [imread(files_input[i], mode='RGB') for i in sub_idx]
                     batch_truth = [img.astype(np.float32) / 127.5 - 1 for img in batch_imgs]
                     batch_input = [imresize(img, .25, interp='bicubic').astype(np.float32)/127.5-1 for img in batch_imgs]
-                    batch_maps_tmp = [np.load(files_map[i], allow_pickle=True)['target_map'] for i in sub_idx]
-                    batch_maps = [[] for _ in range(len(batch_maps_tmp[0]))]
-                    for s in batch_maps_tmp:
-                        for i, item in enumerate(batch_maps):
-                            item.append(s[i])
-                    batch_maps = [np.array(b) for b in batch_maps]
+                    if use_ref_directly:
+                        batch_ref = [imread(files_ref[i], mode='RGB').astype(np.float32) for i in sub_idx]
+                    else:
+                        batch_maps_tmp = [np.load(files_map[i], allow_pickle=True)['target_map'] for i in sub_idx]
+                        batch_maps = [[] for _ in range(len(batch_maps_tmp[0]))] # [[], [], []]
+                        for s in batch_maps_tmp: # [[relu3_1, relu2_1, relu1_1], ...]
+                            for i, item in enumerate(batch_maps):
+                                item.append(s[i])
+                        batch_maps = [np.array(b) for b in batch_maps] # [[relu3_1, ...], [relu2_1, ...], [relu1_1, ...]]
 
                     if use_weight_map:
                         batch_weights = [np.pad(np.load(files_map[i], allow_pickle=True)['weights'], ((1, 1), (1, 1)), 'edge')
                                          for i in sub_idx]
-
                     else:
                         batch_weights = np.zeros(shape=(batch_size, input_size, input_size))
-                    # train with reference
-                    _, l_reconst, l_bp, map_hr_3, map_hr_2, map_hr_1 = sess.run(
-                        fetches=[optimizer_init, loss_reconst, loss_bp,
-                                 self.net_vgg_hr.layers['relu3_1'],
-                                 self.net_vgg_hr.layers['relu2_1'],
-                                 self.net_vgg_hr.layers['relu1_1']],
-                        feed_dict={
-                            self.input: batch_input,
-                            self.maps: batch_maps,
-                            self.ground_truth: batch_truth,
-                            self.weights: batch_weights
-                        }
-                    )
 
-                    # train with truth
-                    _, l_reconst, l_bp = sess.run(
-                        fetches=[optimizer_init, loss_reconst, loss_bp],
-                        feed_dict={
-                            self.input: batch_input,
-                            self.maps: [map_hr_3, map_hr_2, map_hr_1],
-                            self.ground_truth: batch_truth,
-                            self.weights: np.ones_like(np.array(batch_weights))
-                        }
-                    )
+                    if use_ref_directly:
+                        # train with reference
+                        _, l_reconst, l_bp = sess.run(
+                            fetches=[optimizer_init, loss_reconst, loss_bp],
+                            feed_dict={
+                                self.input: batch_input,
+                                self.ref: batch_ref,
+                                self.ground_truth: batch_truth,
+                                self.weights: batch_weights
+                            }
+                        )
+
+                        # train with truth
+                        _, l_reconst, l_bp = sess.run(
+                            fetches=[optimizer_init, loss_reconst, loss_bp],
+                            feed_dict={
+                                self.input: batch_input,
+                                self.ref: batch_truth,
+                                self.ground_truth: batch_truth,
+                                self.weights: np.ones_like(np.array(batch_weights))
+                            }
+                        )
+                    else:
+                        # train with reference
+                        _, l_reconst, l_bp, map_hr_3, map_hr_2, map_hr_1 = sess.run(
+                            fetches=[optimizer_init, loss_reconst, loss_bp,
+                                    self.net_vgg_hr.layers['relu3_1'],
+                                    self.net_vgg_hr.layers['relu2_1'],
+                                    self.net_vgg_hr.layers['relu1_1']],
+                            feed_dict={
+                                self.input: batch_input,
+                                self.maps: batch_maps,
+                                self.ground_truth: batch_truth,
+                                self.weights: batch_weights
+                            }
+                        )
+
+                        # train with truth
+                        _, l_reconst, l_bp = sess.run(
+                            fetches=[optimizer_init, loss_reconst, loss_bp],
+                            feed_dict={
+                                self.input: batch_input,
+                                self.maps: [map_hr_3, map_hr_2, map_hr_1],
+                                self.ground_truth: batch_truth,
+                                self.weights: np.ones_like(np.array(batch_weights))
+                            }
+                        )
 
                     # print
                     time_per_iter = time.time() - step_time
@@ -682,12 +716,20 @@ class SRNTT(object):
                                   weights[4] * l_reconst, weights[3] * l_bp))
 
                 # save intermediate results
-                vis.save_images(
-                    np.round((self.net_srntt.outputs.eval({
-                        self.input: samples_input, self.maps: samples_texture_map,
-                        self.weights: samples_weight_map}) + 1) * 127.5).astype(np.uint8),
-                    [frame_size, frame_size],
-                    join(self.save_dir, SAMPLE_FOLDER, 'init_E%03d.png' % (epoch+1+init_model_latest)))
+                if use_ref_directly:
+                    vis.save_images(
+                        np.round((self.net_srntt.outputs.eval({
+                            self.input: samples_input, self.ref: samples_texture_ref,
+                            self.weights: samples_weight_map}) + 1) * 127.5).astype(np.uint8),
+                        [frame_size, frame_size],
+                        join(self.save_dir, SAMPLE_FOLDER, 'init_E%03d.png' % (epoch+1+init_model_latest)))
+                else:
+                    vis.save_images(
+                        np.round((self.net_srntt.outputs.eval({
+                            self.input: samples_input, self.maps: samples_texture_map,
+                            self.weights: samples_weight_map}) + 1) * 127.5).astype(np.uint8),
+                        [frame_size, frame_size],
+                        join(self.save_dir, SAMPLE_FOLDER, 'init_E%03d.png' % (epoch+1+init_model_latest)))
 
                 # save model for each epoch
                 files.save_npz(
@@ -706,12 +748,15 @@ class SRNTT(object):
                     batch_imgs = [imread(files_input[i], mode='RGB') for i in sub_idx]
                     batch_truth = [img.astype(np.float32) / 127.5 - 1 for img in batch_imgs]
                     batch_input = [imresize(img, .25, interp='bicubic').astype(np.float32)/127.5-1 for img in batch_imgs]
-                    batch_maps_tmp = [np.load(files_map[i], allow_pickle=True)['target_map'] for i in sub_idx]
-                    batch_maps = [[] for _ in range(len(batch_maps_tmp[0]))]
-                    for s in batch_maps_tmp:
-                        for i, item in enumerate(batch_maps):
-                            item.append(s[i])
-                    batch_maps = [np.array(b) for b in batch_maps]
+                    if use_ref_directly:
+                        batch_ref = [imread(files_ref[i], mode='RGB').astype(np.float32) for i in sub_idx]
+                    else:
+                        batch_maps_tmp = [np.load(files_map[i], allow_pickle=True)['target_map'] for i in sub_idx]
+                        batch_maps = [[] for _ in range(len(batch_maps_tmp[0]))]
+                        for s in batch_maps_tmp:
+                            for i, item in enumerate(batch_maps):
+                                item.append(s[i])
+                        batch_maps = [np.array(b) for b in batch_maps]
                     if use_weight_map:
                         batch_weights = [np.pad(np.load(files_map[i], allow_pickle=True)['weights'], ((1, 1), (1, 1)), 'edge')
                                          for i in sub_idx]
@@ -720,8 +765,55 @@ class SRNTT(object):
 
                     # train with reference
                     for _ in xrange(2):
-                        _ = sess.run(
-                            fetches=[optimizer_d],
+                        if use_ref_directly:
+                            _ = sess.run(
+                                fetches=[optimizer_d],
+                                feed_dict={
+                                    self.input: batch_input,
+                                    self.ref: batch_ref,
+                                    self.ground_truth: batch_truth,
+                                    self.weights: batch_weights
+                                }
+                            )
+                        else:
+                            _ = sess.run(
+                                fetches=[optimizer_d],
+                                feed_dict={
+                                    self.input: batch_input,
+                                    self.maps: batch_maps,
+                                    self.ground_truth: batch_truth,
+                                    self.weights: batch_weights
+                                }
+                            )
+                    
+                    if use_ref_directly:
+                        _, _, l_rec, l_per, l_tex, l_adv, l_dis, l_bp = sess.run(
+                            fetches=[optimizer, optimizer_d, loss_reconst, loss_percep, loss_texture, loss_g, loss_d, loss_bp],
+                            feed_dict={
+                                self.input: batch_input,
+                                self.ref: batch_ref,
+                                self.ground_truth: batch_truth,
+                                self.weights: batch_weights
+                            }
+                        )
+
+                        # train with truth
+                        _, _, l_rec, l_per, l_tex, l_adv, l_dis, l_bp = sess.run(
+                            fetches=[optimizer, optimizer_d, loss_reconst, loss_percep, loss_texture, loss_g, loss_d, loss_bp],
+                            feed_dict={
+                                self.input: batch_input,
+                                self.ref: batch_truth,
+                                self.ground_truth: batch_truth,
+                                self.weights: np.ones_like(np.array(batch_weights))
+                            }
+                        )
+                    else:
+                        _, _, l_rec, l_per, l_tex, l_adv, l_dis, l_bp, map_hr_3, map_hr_2, map_hr_1 = sess.run(
+                            fetches=[optimizer, optimizer_d, loss_reconst, loss_percep, loss_texture, loss_g, loss_d, loss_bp,
+                                    self.net_vgg_hr.layers['relu3_1'],
+                                    self.net_vgg_hr.layers['relu2_1'],
+                                    self.net_vgg_hr.layers['relu1_1'],
+                                    ],
                             feed_dict={
                                 self.input: batch_input,
                                 self.maps: batch_maps,
@@ -729,30 +821,17 @@ class SRNTT(object):
                                 self.weights: batch_weights
                             }
                         )
-                    _, _, l_rec, l_per, l_tex, l_adv, l_dis, l_bp, map_hr_3, map_hr_2, map_hr_1 = sess.run(
-                        fetches=[optimizer, optimizer_d, loss_reconst, loss_percep, loss_texture, loss_g, loss_d, loss_bp,
-                                 self.net_vgg_hr.layers['relu3_1'],
-                                 self.net_vgg_hr.layers['relu2_1'],
-                                 self.net_vgg_hr.layers['relu1_1'],
-                                 ],
-                        feed_dict={
-                            self.input: batch_input,
-                            self.maps: batch_maps,
-                            self.ground_truth: batch_truth,
-                            self.weights: batch_weights
-                        }
-                    )
 
-                    # train with truth
-                    _, _, l_rec, l_per, l_tex, l_adv, l_dis, l_bp = sess.run(
-                        fetches=[optimizer, optimizer_d, loss_reconst, loss_percep, loss_texture, loss_g, loss_d, loss_bp],
-                        feed_dict={
-                            self.input: batch_input,
-                            self.maps: [map_hr_3, map_hr_2, map_hr_1],
-                            self.ground_truth: batch_truth,
-                            self.weights: np.ones_like(np.array(batch_weights))
-                        }
-                    )
+                        # train with truth
+                        _, _, l_rec, l_per, l_tex, l_adv, l_dis, l_bp = sess.run(
+                            fetches=[optimizer, optimizer_d, loss_reconst, loss_percep, loss_texture, loss_g, loss_d, loss_bp],
+                            feed_dict={
+                                self.input: batch_input,
+                                self.maps: [map_hr_3, map_hr_2, map_hr_1],
+                                self.ground_truth: batch_truth,
+                                self.weights: np.ones_like(np.array(batch_weights))
+                            }
+                        )
 
                     # print
                     time_per_iter = time.time() - step_time
@@ -769,12 +848,20 @@ class SRNTT(object):
                                   weights[2] * l_adv, l_dis))
 
                 # save intermediate results
-                vis.save_images(
-                    np.round((self.net_srntt.outputs.eval({
-                        self.input: samples_input, self.maps: samples_texture_map,
-                        self.weights: samples_weight_map}) + 1) * 127.5).astype(np.uint8),
-                    [frame_size, frame_size],
-                    join(self.save_dir, SAMPLE_FOLDER, 'E%03d.png' % (epoch+1+pre_model_latest)))
+                if use_ref_directly:
+                    vis.save_images(
+                        np.round((self.net_srntt.outputs.eval({
+                            self.input: samples_input, self.ref: samples_texture_ref,
+                            self.weights: samples_weight_map}) + 1) * 127.5).astype(np.uint8),
+                        [frame_size, frame_size],
+                        join(self.save_dir, SAMPLE_FOLDER, 'E%03d.png' % (epoch+1+pre_model_latest)))
+                else:
+                    vis.save_images(
+                        np.round((self.net_srntt.outputs.eval({
+                            self.input: samples_input, self.maps: samples_texture_map,
+                            self.weights: samples_weight_map}) + 1) * 127.5).astype(np.uint8),
+                        [frame_size, frame_size],
+                        join(self.save_dir, SAMPLE_FOLDER, 'E%03d.png' % (epoch+1+pre_model_latest)))
 
                 # save models for each epoch
                 files.save_npz(
@@ -793,6 +880,7 @@ class SRNTT(object):
             use_pretrained_model=True,
             use_init_model_only=False,  # the init model is trained only with the reconstruction loss
             model_epoch = -1,
+            use_ref_directly=False,
             use_weight_map=False,
             result_dir=None,
             ref_scale=1.0,
@@ -897,6 +985,12 @@ class SRNTT(object):
         if not exists(join(result_dir, 'tmp')):
             makedirs(join(result_dir, 'tmp'))
 
+        if use_ref_directly:
+            ## 要求 input 和 ref 一对一, 尺寸相同, 不需要分割成块
+            assert use_weight_map == False
+            assert grids is None
+            assert len(img_ref) == 1
+            assert img_ref[0].shape == img_input.shape
         # ********************************************************************************
         # *** build graph
         # ********************************************************************************
@@ -908,7 +1002,6 @@ class SRNTT(object):
 
             # reference images, range [0, 255]
             self.input_vgg19 = tf.placeholder(shape=[1, None, None, 3], dtype=tf.float32)
-
 
             # swapped feature map and weights
             self.maps = (
@@ -951,8 +1044,9 @@ class SRNTT(object):
             self.sess = tf.Session(config=config)
 
             # instant of Swap()
-            logging.info('Initialize the swapper')
-            self.swaper = Swap(sess=self.sess)
+            if not use_ref_directly:
+                logging.info('Initialize the swapper')
+                self.swaper = Swap(sess=self.sess)
 
             logging.info('Loading models ...')
             self.sess.run(tf.global_variables_initializer())
@@ -1049,16 +1143,17 @@ class SRNTT(object):
             for j in xrange(len(styles)):
                 styles[j].append(i[j])
 
-        logging.info('\t[2/2] Getting feature map of LR->SR Ref image ...')
-        map_ref_sr = [] # 多张参考图LR/SR后的 [relu3_1, ...]
-        for i in img_ref:
-            img_ref_downscale = imresize(i, .25, interp='bicubic')
-            img_ref_upscale = imresize(img_ref_downscale, 4., interp='bicubic')
-            map_ref_sr.append(
-                self.net_vgg19.get_layer_output(
-                    sess=self.sess, layer_name=matching_layer[0],
-                    feed_image=img_ref_upscale)
-            )
+        if not use_ref_directly:
+            logging.info('\t[2/2] Getting feature map of LR->SR Ref image ...')
+            map_ref_sr = [] # 多张参考图LR/SR后的 [relu3_1, ...]
+            for i in img_ref:
+                img_ref_downscale = imresize(i, .25, interp='bicubic')
+                img_ref_upscale = imresize(img_ref_downscale, 4., interp='bicubic')
+                map_ref_sr.append(
+                    self.net_vgg19.get_layer_output(
+                        sess=self.sess, layer_name=matching_layer[0],
+                        feed_image=img_ref_upscale)
+                )
 
         # swap ref to in
         logging.info('Patch-Wise Matching and Swapping')
@@ -1078,19 +1173,23 @@ class SRNTT(object):
             else:
                 map_hr = None
 
-            logging.info('\tGetting feature map of input LR image ...')
-            img_input_upscale = imresize(patch, 4., interp='bicubic')
-            map_sr = self.net_vgg19.get_layer_output(
-                sess=self.sess, layer_name=matching_layer[0], feed_image=img_input_upscale)
+            if use_ref_directly:
+                logging.info('\tUsing ref features directly ...')
+                map_target = map_ref[0]
+            else:
+                logging.info('\tGetting feature map of input LR image ...')
+                img_input_upscale = imresize(patch, 4., interp='bicubic')
+                map_sr = self.net_vgg19.get_layer_output(
+                    sess=self.sess, layer_name=matching_layer[0], feed_image=img_input_upscale)
 
-            logging.info('\tMatching and swapping features ...')
-            map_target, weight, _ = self.swaper.conditional_swap_multi_layer(
-                content=map_sr,
-                style=styles[0],
-                condition=map_ref_sr,
-                other_styles=styles[1:],
-                is_weight=use_weight_map
-            )
+                logging.info('\tMatching and swapping features ...')
+                map_target, weight, _ = self.swaper.conditional_swap_multi_layer(
+                    content=map_sr,
+                    style=styles[0],
+                    condition=map_ref_sr,
+                    other_styles=styles[1:],
+                    is_weight=use_weight_map
+                )
 
             logging.info('\tAdd Gaussian noise of {} mean and {} std on {} features ...'.format(noise_mean, noise_sigma, noise_target))
             for i in range(len(map_target)):
@@ -1149,6 +1248,7 @@ class SRNTT(object):
             logging.info('Obtain SR patches')
             if use_weight_map:
                 weight = np.pad(weight, ((1, 1), (1, 1)), 'edge')
+                time_step_1 = time.time()
                 out_srntt, out_upscale = self.sess.run(
                     fetches=[self.net_srntt.outputs, self.net_upscale.outputs],
                     feed_dict={
@@ -1157,6 +1257,7 @@ class SRNTT(object):
                         self.weights: [weight]
                     }
                 )
+                time_step_2 = time.time()
             else:
                 time_step_1 = time.time()
                 out_srntt, out_upscale = self.sess.run(
@@ -1168,8 +1269,8 @@ class SRNTT(object):
                 )
                 time_step_2 = time.time()
 
-                logging.info('Time elapsed: PM: %.3f sec, SR: %.3f sec' %
-                             ((time_step_1 - t_start), (time_step_2 - time_step_1)))
+            logging.info('Time elapsed: PM: %.3f sec, SR: %.3f sec' %
+                            ((time_step_1 - t_start), (time_step_2 - time_step_1)))
 
 
             imsave(join(result_dir, 'tmp', 'srntt_%05d.png' % idx),

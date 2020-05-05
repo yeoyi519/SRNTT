@@ -55,6 +55,7 @@ parser.add_argument('--is_WGAN_GP', type=str2bool, default=True, help='whether u
 parser.add_argument('--is_L1_loss', type=str2bool, default=True, help='whether use L1 norm')
 parser.add_argument('--param_WGAN_GP', type=float, default=10, help='parameter for WGAN-GP')
 parser.add_argument('--input_size', type=int, default=40)
+parser.add_argument('--use_ref_directly', type=str2bool, default=False, help='use ref vgg feature directly')
 parser.add_argument('--use_weight_map', type=str2bool, default=False)
 parser.add_argument('--use_lower_layers_in_per_loss', type=str2bool, default=False)
 
@@ -143,6 +144,7 @@ if args.is_train:
         is_L1_loss=args.is_L1_loss,
         param_WGAN_GP=args.param_WGAN_GP,
         input_size=args.input_size,
+        use_ref_directly=args.use_ref_directly,
         use_weight_map=args.use_weight_map,
         use_lower_layers_in_per_loss=args.use_lower_layers_in_per_loss
     )
@@ -223,6 +225,7 @@ else:
                 use_pretrained_model=args.use_pretrained_model,
                 use_init_model_only=args.use_init_model_only,
                 model_epoch=args.model_epoch,
+                use_ref_directly=args.use_ref_directly,
                 use_weight_map=args.use_weight_map,
                 result_dir=join(args.result_dir, img_name, ref_name),
                 ref_scale=args.ref_scale,
@@ -257,6 +260,7 @@ else:
             use_pretrained_model=args.use_pretrained_model,
             use_init_model_only=args.use_init_model_only,
             model_epoch=args.model_epoch,
+            use_ref_directly=args.use_ref_directly,
             use_weight_map=args.use_weight_map,
             result_dir=args.result_dir,
             ref_scale=args.ref_scale,
